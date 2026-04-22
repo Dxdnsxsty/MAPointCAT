@@ -11,6 +11,8 @@ import torch.optim
 from torch.autograd import Variable
 from tqdm import tqdm
 import torch.nn.functional as F
+import torch.nn as nn
+import numpy as np
 
 from baselines import *
 from loss.nt_adv import NTAdvLoss
