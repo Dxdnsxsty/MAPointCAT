@@ -1,31 +1,25 @@
 # -*- coding: utf-8 -*-
 
+# import logging
+import importlib
 import os
 import sys
-import datetime
-# import logging
-import shutil
-import importlib
-import numpy as np
-from pathlib import Path
+import random
 
 import torch
 import torch.optim
-import torchvision.utils as vutils
 from torch.autograd import Variable
-
 from tqdm import tqdm
-import utils.provider as provider
-
-
-from utils.logging import Logging_str
-from utils.utils import AverageMeter, save_checkpoint
-from model.networks import AutoEncoder, ProjHead #, Generator, Discriminator
-from loss.nt_supcon import SupConLoss
-from loss.nt_cent import NTCentLoss
-from loss.nt_adv import NTAdvLoss
+import torch.nn.functional as F
 
 from baselines import *
+from loss.nt_adv import NTAdvLoss
+from loss.nt_cent import NTCentLoss
+from loss.nt_supcon import SupConLoss
+from loss.cross_attack import CrossAttackConsistencyLoss
+from model.networks import AutoEncoder, ProjHead  # , Generator, Discriminator
+from utils.logging import Logging_str
+from utils.utils import AverageMeter, save_checkpoint
 
 # include other paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,21 +50,19 @@ class PointCAT(object):
         self.build_models()
         self.load_weights()
 
-
-
     def build_models(self):
         """
         Build new models for training.
         """
         MODEL = importlib.import_module(self.args.defended_model)
         classifier = MODEL.get_model(
-            self.num_class, 
+            self.num_class,
             normal_channel=self.args.normal
         )
         noise_generator = AutoEncoder(
             k=self.num_class,
-            input_point_nums=self.args.input_point_nums, 
-            decoder_type=self.args.decoder_type, 
+            input_point_nums=self.args.input_point_nums,
+            decoder_type=self.args.decoder_type,
             args=self.args
         )
 
@@ -78,10 +70,9 @@ class PointCAT(object):
         if self.args.use_multi_gpu:
             classifier = nn.DataParallel(classifier)
             noise_generator = nn.DataParallel(noise_generator)
-        
+
         self.classifier = classifier.cuda()
         self.noise_generator = noise_generator.cuda()
-
 
     def load_weights(self):
         """
@@ -98,7 +89,7 @@ class PointCAT(object):
             self.start_epoch_c = 0
             # self.need_preview = True
             self.log_string.write('No existing classifier, starting training from scratch...')
-        
+
         try:
             checkpoint = torch.load(str(self.log_path) + '/checkpoints/best_noise_generator.pth')
             self.start_epoch_ng = checkpoint['epoch']
@@ -107,7 +98,6 @@ class PointCAT(object):
         except:
             self.start_epoch_ng = 0
             self.log_string.write('No existing noise-generator, starting training from scratch...')
-
 
     def build_optimizers(self):
         """
@@ -130,13 +120,13 @@ class PointCAT(object):
             )
         else:
             self.optimizer_c = torch.optim.SGD(
-                self.classifier.parameters(), 
-                lr=self.args.lr_c, 
+                self.classifier.parameters(),
+                lr=self.args.lr_c,
                 momentum=0.9
             )
             self.optimizer_ng = torch.optim.SGD(
-                self.noise_generator.parameters(), 
-                lr=self.args.lr_ng, 
+                self.noise_generator.parameters(),
+                lr=self.args.lr_ng,
                 momentum=0.9
             )
         # self.scheduler_c = torch.optim.lr_scheduler.StepLR(self.optimizer_c, step_size=20, gamma=0.7)
@@ -152,7 +142,6 @@ class PointCAT(object):
             T_mult=2
         )
 
-
     def scheduler_step(self):
         """
         Update learning rate schedulers.
@@ -160,7 +149,6 @@ class PointCAT(object):
         self.scheduler_c.step()
         self.scheduler_ng.step()
         self.scheduler_fc.step()
-
 
     def clear_grad(self, model):
         """
@@ -170,16 +158,13 @@ class PointCAT(object):
             if p.grad is not None:
                 p.grad.detach_()
                 p.grad.zero_()
-    
-    
+
     def reset_grad(self):
         """
         Reset the gradient buffers.
         """
         self.optimizer_c.zero_grad()
         self.optimizer_ng.zero_grad()
-
-
 
     def get_projection_head(self, mode):
         """
@@ -251,23 +236,21 @@ class PointCAT(object):
 
         self.classifier = self.classifier.cuda()
 
-
     def CWLoss(self, logits, target, kappa=0, tar=True, num_classes=40):
         """
         C&W loss function.
         """
         target = torch.ones(logits.size(0)).type(torch.cuda.FloatTensor).mul(target.float())
         target_one_hot = Variable(torch.eye(num_classes).type(torch.cuda.FloatTensor)[target.long()].cuda())
-        
-        real = torch.sum(target_one_hot*logits, 1)
-        other = torch.max((1-target_one_hot)*logits - (target_one_hot*10000), 1)[0]
+
+        real = torch.sum(target_one_hot * logits, 1)
+        other = torch.max((1 - target_one_hot) * logits - (target_one_hot * 10000), 1)[0]
         kappa = torch.zeros_like(other).fill_(kappa)
 
         if tar:
-            return torch.sum(torch.max(other-real, kappa))
-        else :
-            return torch.sum(torch.max(real-other, kappa))
-
+            return torch.sum(torch.max(other - real, kappa))
+        else:
+            return torch.sum(torch.max(real - other, kappa))
 
     def get_feature_peak(self, mode='init'):
         """
@@ -281,7 +264,7 @@ class PointCAT(object):
         input_gather = None
         ### Per-class Feature Centre Optimization
         # label initializing
-        labels = torch.Tensor([y for y in range(self.num_class)]).cuda() # [num_class]
+        labels = torch.Tensor([y for y in range(self.num_class)]).cuda()  # [num_class]
 
         # input initializing
         if mode == 'init':
@@ -293,9 +276,8 @@ class PointCAT(object):
             random_input = self.input_gather
 
         random_input = random_input.clone().detach_()
-        random_input = Variable(random_input.cuda().float()) # [num_class, C, N]
+        random_input = Variable(random_input.cuda().float())  # [num_class, C, N]
         random_input.requires_grad = True
-
 
         # optimizer initializing
         lr = 0.005 if mode == 'init' else self.args.lr_fp
@@ -321,7 +303,7 @@ class PointCAT(object):
             optimizer.zero_grad()
 
             input = torch.clamp(random_input, min=-1, max=1)
-            _, pred = self.classifier(input) # [num_class, num_class, 1]
+            _, pred = self.classifier(input)  # [num_class, num_class, 1]
             self.classifier.zero_grad()
 
             # mask = torch.ones_like(pred[0]).float().cuda()
@@ -343,7 +325,6 @@ class PointCAT(object):
         self.feature_gather = feature_gather.clone().detach_()
         self.input_gather = input_gather.clone().detach_()
 
-
     def get_feature_peak_1(self, mode='init'):
         """
         Compute the feature centre based maximum C&W confidence for each class.
@@ -357,7 +338,7 @@ class PointCAT(object):
         ### Per-class Feature Centre Optimization
         for y in tqdm(range(self.num_class), smoothing=0.9):
             # label initializing
-            y = torch.Tensor([y]).cuda() # [1]
+            y = torch.Tensor([y]).cuda()  # [1]
 
             # input initializing
             if mode == 'init':
@@ -371,7 +352,6 @@ class PointCAT(object):
             random_input = random_input.clone().detach_()
             random_input = Variable(random_input.cuda().float())
             random_input.requires_grad = True
-
 
             # optimizer initializing
             lr = 0.005 if mode == 'init' else self.args.lr_fp
@@ -397,7 +377,7 @@ class PointCAT(object):
                 optimizer.zero_grad()
 
                 input = torch.clamp(random_input, min=-1, max=1)
-                _, pred = self.classifier(input) # [1, num_class, 1]
+                _, pred = self.classifier(input)  # [1, num_class, 1]
                 self.classifier.zero_grad()
 
                 # mask = torch.ones_like(pred[0]).float().cuda()
@@ -427,7 +407,6 @@ class PointCAT(object):
         self.feature_gather = feature_gather.clone().detach_()
         self.input_gather = input_gather.clone().detach_()
 
-
     def get_feature_peak_2(self, mode='init'):
         """
         Compute the feature centre based maximum C&W confidence for each class.
@@ -439,7 +418,7 @@ class PointCAT(object):
         feature_gather = None
         ### Per-class Feature Centre Optimization
         # label initializing
-        labels = torch.Tensor([y for y in range(self.num_class)]).cuda() # [num_class]
+        labels = torch.Tensor([y for y in range(self.num_class)]).cuda()  # [num_class]
 
         # input initializing
         if mode == 'init':
@@ -451,9 +430,8 @@ class PointCAT(object):
             random_input = self.feature_gather
 
         random_input = random_input.clone().detach_()
-        random_input = Variable(random_input.cuda().float()) # [num_class, 256]
+        random_input = Variable(random_input.cuda().float())  # [num_class, 256]
         random_input.requires_grad = True
-
 
         # optimizer initializing
         lr = 0.005 if mode == 'init' else self.args.lr_fp
@@ -481,11 +459,11 @@ class PointCAT(object):
             # input = torch.clamp(random_input, min=-1, max=1)
 
             if self.args.defended_model == 'dgcnn':
-                pred = self.classifier.linear3(random_input.detach()) # [num_class, num_class]
+                pred = self.classifier.linear3(random_input.detach())  # [num_class, num_class]
             elif self.args.defended_model == 'curvenet':
-                pred = self.classifier.conv2(random_input.detach()) # [num_class, num_class]
+                pred = self.classifier.conv2(random_input.detach())  # [num_class, num_class]
             else:
-                pred = self.classifier.fc3(random_input.detach()) # [num_class, num_class]
+                pred = self.classifier.fc3(random_input.detach())  # [num_class, num_class]
 
             self.classifier.zero_grad()
 
@@ -502,14 +480,12 @@ class PointCAT(object):
         ### Save to Constant
         self.feature_gather = feature_gather.clone().detach_()
 
-
     def set_target(self, pc, target):
         """
         Set labels and original examples from dataset.
         """
-        self.pc_ori = pc # [B, C, N]
-        self.target = target.long() # [B]
-
+        self.pc_ori = pc  # [B, C, N]
+        self.target = target.long()  # [B]
 
     def set_loss_function(self):
         """
@@ -535,7 +511,8 @@ class PointCAT(object):
             temperature=self.args.temperature_adv,
             use_cosine_similarity=self.args.use_cosine_similarity
         )
-
+        self.criterion_ce = torch.nn.CrossEntropyLoss()
+        self.cross_attack_criterion = CrossAttackConsistencyLoss(metric='cosine')
 
     def run(self, mode, ii=False):
         """
@@ -551,7 +528,6 @@ class PointCAT(object):
             self.run_finetune(ii)
         else:
             raise NotImplementedError
-
 
     def run_train(self):
         """
@@ -574,45 +550,46 @@ class PointCAT(object):
             # pert = torch.tanh(pert)
             pert = pert * self.args.eps
 
-
             # Compute adversarial point-cloud
-            self.pc_adv = torch.clamp(self.pc_ori+pert, min=-1, max=1)
+            self.pc_adv = torch.clamp(self.pc_ori + pert, min=-1, max=1)
             # self.pc_adv = self.pc_ori + pert
 
             # Get two projections respectively
-            _, projection_ori = self.classifier(self.pc_ori) # [B, ch]
-            _, projection_adv = self.classifier(self.pc_adv) # [B, ch]
+            _, projection_ori = self.classifier(self.pc_ori)  # [B, ch]
+            _, projection_adv = self.classifier(self.pc_adv)  # [B, ch]
 
             # Get intra-class feature centre for current batch data
-            feature_peak = self.feature_gather.index_select(0, self.target) # [B, 1, ch]
+            feature_peak = self.feature_gather.index_select(0, self.target)  # [B, 1, ch]
             # feature_peak = feature_peak.squeeze(1) # [B, ch]
 
             # Get the projection of feature peak for the batch data
             projection_fp = None
             if self.args.use_multi_gpu:
                 if self.args.defended_model == 'dgcnn':
-                    projection_fp = self.classifier.module.linear3(feature_peak) # [B, ch]
+                    projection_fp = self.classifier.module.linear3(feature_peak)  # [B, ch]
                 elif self.args.defended_model == 'curvenet':
-                    projection_fp = self.classifier.module.conv2(feature_peak) # [B, ch]
+                    projection_fp = self.classifier.module.conv2(feature_peak)  # [B, ch]
                 else:
-                    projection_fp = self.classifier.module.fc3(feature_peak) # [B, ch]
+                    projection_fp = self.classifier.module.fc3(feature_peak)  # [B, ch]
             else:
                 if self.args.defended_model == 'dgcnn':
-                    projection_fp = self.classifier.linear3(feature_peak) # [B, ch]
+                    projection_fp = self.classifier.linear3(feature_peak)  # [B, ch]
                 elif self.args.defended_model == 'curvenet':
-                    projection_fp = self.classifier.conv2(feature_peak) # [B, ch]
+                    projection_fp = self.classifier.conv2(feature_peak)  # [B, ch]
                 else:
-                    projection_fp = self.classifier.fc3(feature_peak) # [B, ch]
+                    projection_fp = self.classifier.fc3(feature_peak)  # [B, ch]
             assert projection_fp is not None
 
             # Compute the adversarial loss and update noise-generator
-            loss_ng, loss_ng_1, loss_ng_2 = self.nt_adv_criterion(ori=projection_ori, adv=projection_adv, fp=projection_fp)
+            loss_ng, loss_ng_1, loss_ng_2 = self.nt_adv_criterion(ori=projection_ori, adv=projection_adv,
+                                                                  fp=projection_fp)
             self.optimizer_ng.zero_grad()
             loss_ng.backward()
             self.optimizer_ng.step()
 
             # Print training info
-            self.log_string.write('Loss ng: %.6f (Loss 1: %.6f Loss 2: %.6f)' % (loss_ng.item(), loss_ng_1.item(), loss_ng_2.item()))
+            self.log_string.write(
+                'Loss ng: %.6f (Loss 1: %.6f Loss 2: %.6f)' % (loss_ng.item(), loss_ng_1.item(), loss_ng_2.item()))
 
         # =================================================================================== #
         #                     2. Update Classifier and Projection Head                        #
@@ -631,33 +608,33 @@ class PointCAT(object):
         pert = pert * self.args.eps
 
         # Compute adversarial point-cloud
-        self.pc_adv = torch.clamp(self.pc_ori+pert, min=-1, max=1)
+        self.pc_adv = torch.clamp(self.pc_ori + pert, min=-1, max=1)
         # self.pc_adv = self.pc_ori + pert
 
         # Re-get the projection of adv
-        _, projection_ori = self.classifier(self.pc_ori) # [B, ch]
-        _, projection_adv = self.classifier(self.pc_adv.detach()) # [B, ch]
+        _, projection_ori = self.classifier(self.pc_ori)  # [B, ch]
+        _, projection_adv = self.classifier(self.pc_adv.detach())  # [B, ch]
 
         # Get intra-class feature centre for each class
         # feature_peak = self.feature_gather.squeeze(1) # [M, ch]
-        feature_peak = self.feature_gather # [M, ch]
+        feature_peak = self.feature_gather  # [M, ch]
 
         # Get the projection of feature peak for the batch data
         projection_fp = None
         if self.args.use_multi_gpu:
             if self.args.defended_model == 'dgcnn':
-                projection_fp = self.classifier.module.linear3(feature_peak) # [B, ch]
+                projection_fp = self.classifier.module.linear3(feature_peak)  # [B, ch]
             elif self.args.defended_model == 'curvenet':
-                projection_fp = self.classifier.module.conv2(feature_peak) # [B, ch]
+                projection_fp = self.classifier.module.conv2(feature_peak)  # [B, ch]
             else:
-                projection_fp = self.classifier.module.fc3(feature_peak) # [B, ch]
+                projection_fp = self.classifier.module.fc3(feature_peak)  # [B, ch]
         else:
             if self.args.defended_model == 'dgcnn':
-                projection_fp = self.classifier.linear3(feature_peak) # [B, ch]
+                projection_fp = self.classifier.linear3(feature_peak)  # [B, ch]
             elif self.args.defended_model == 'curvenet':
-                projection_fp = self.classifier.conv2(feature_peak) # [B, ch]
+                projection_fp = self.classifier.conv2(feature_peak)  # [B, ch]
             else:
-                projection_fp = self.classifier.fc3(feature_peak) # [B, ch]
+                projection_fp = self.classifier.fc3(feature_peak)  # [B, ch]
         assert projection_fp is not None
 
         # Compute intra-class feature centralizing loss
@@ -675,9 +652,9 @@ class PointCAT(object):
         self.optimizer_c.step()
 
         # Print training info
-        self.log_string.write('Loss cls: %.6f (Loss cent 1: %.6f Loss cent 2: %.6f)' % (loss_cls.item(), loss_cent_ori_fp.item(), loss_cent_adv_fp.item()))
-
-
+        self.log_string.write(
+            'Loss cls: %.6f (Loss cent 1: %.6f Loss cent 2: %.6f)' % (loss_cls.item(), loss_cent_ori_fp.item(),
+                                                                      loss_cent_adv_fp.item()))
 
     def run_finetune(self, ii):
         """
@@ -781,15 +758,14 @@ class PointCAT(object):
 
         self.log_string.write('Loss fc: %.6f' % (loss.item()))
 
-
     def run_test(self):
         """
         Evaluate the performance and robustness of CAT trained classifier.
         """
         self.classifier.eval()
         batch_size = self.target.size(0)
-        ori_input = self.pc_ori.clone().detach().transpose(1, 2).contiguous() # [B, N, C]
-        ori_target = self.target # [B]
+        ori_input = self.pc_ori.clone().detach().transpose(1, 2).contiguous()  # [B, N, C]
+        ori_target = self.target  # [B]
 
         ############################################
         ### (1) clean acc
@@ -799,7 +775,6 @@ class PointCAT(object):
             pred = torch.argmax(logits, dim=-1)
             acc_num = (pred == ori_target).sum().item()
         self.acc_clean.update(val=acc_num, n=batch_size)
-
 
         ############################################
         ### (2) noisy and random dropping attacks
@@ -814,7 +789,6 @@ class PointCAT(object):
         drop_attack = DropAttack(self.classifier, drop_num=700)
         _, acc_num = drop_attack(ori_input.detach(), ori_target)
         self.acc_drop.update(val=acc_num, n=batch_size)
-
 
         ############################################
         ### (3) untargeted adversarial attacks
@@ -847,19 +821,19 @@ class PointCAT(object):
 
         # I-FGM
         ifgm_attack = IFGM(self.classifier, adv_func=adv_func, clip_func=clip_func, budget=budget,
-                                 step_size=step_size, num_iter=num_iter, dist_metric='l2')
+                           step_size=step_size, num_iter=num_iter, dist_metric='l2')
         _, success_num = ifgm_attack.attack(ori_input.detach(), ori_target, mode='untargeted')
         self.success_ifgm_untar.update(val=success_num, n=batch_size)
 
         # MI-FGM
         mifgm_attack = MIFGM(self.classifier, adv_func=adv_func, clip_func=clip_func, budget=budget,
-                                   step_size=step_size, num_iter=num_iter, mu=self.args.mu, dist_metric='l2')
+                             step_size=step_size, num_iter=num_iter, mu=self.args.mu, dist_metric='l2')
         _, success_num = mifgm_attack.attack(ori_input.detach(), ori_target, mode='untargeted')
         self.success_mifgm_untar.update(val=success_num, n=batch_size)
 
         # PGD
         pgd_attack = PGD(self.classifier, adv_func=adv_func, clip_func=clip_func, budget=budget,
-                               step_size=step_size, num_iter=num_iter, dist_metric='l2')
+                         step_size=step_size, num_iter=num_iter, dist_metric='l2')
         _, success_num = pgd_attack.attack(ori_input.detach(), ori_target, mode='untargeted')
         self.success_pgd_untar.update(val=success_num, n=batch_size)
 
@@ -869,7 +843,6 @@ class PointCAT(object):
         #                             binary_step=self.args.binary_step, num_iter=self.args.num_iter_cw)
         # _, _, success_num = cw_attack.attack(ori_input.detach(), ori_target, mode='untargeted')
         # self.success_cw_untar.update(val=success_num, n=batch_size)
-
 
         ############################################
         ### (4) targeted adversarial attacks
@@ -891,7 +864,7 @@ class PointCAT(object):
             idx.remove(int(ori_target[i].cpu().item()))
             adv_target.append(np.random.choice(idx))
         assert len(adv_target) == batch_size
-        adv_target = torch.Tensor(adv_target).to(ori_target.device) # [B]
+        adv_target = torch.Tensor(adv_target).to(ori_target.device)  # [B]
 
         # which adv_func to use?
         if self.args.adv_func == 'logits':
@@ -906,19 +879,19 @@ class PointCAT(object):
 
         # I-FGM
         ifgm_attack = IFGM(self.classifier, adv_func=adv_func, clip_func=clip_func, budget=budget,
-                                 step_size=step_size, num_iter=num_iter, dist_metric='l2')
+                           step_size=step_size, num_iter=num_iter, dist_metric='l2')
         _, success_num = ifgm_attack.attack(ori_input.detach(), adv_target, mode='targeted')
         self.success_ifgm_tar.update(val=success_num, n=batch_size)
 
         # MI-FGM
         mifgm_attack = MIFGM(self.classifier, adv_func=adv_func, clip_func=clip_func, budget=budget,
-                                   step_size=step_size, num_iter=num_iter, mu=self.args.mu, dist_metric='l2')
+                             step_size=step_size, num_iter=num_iter, mu=self.args.mu, dist_metric='l2')
         _, success_num = mifgm_attack.attack(ori_input.detach(), adv_target, mode='targeted')
         self.success_mifgm_tar.update(val=success_num, n=batch_size)
 
         # PGD
         pgd_attack = PGD(self.classifier, adv_func=adv_func, clip_func=clip_func, budget=budget,
-                               step_size=step_size, num_iter=num_iter, dist_metric='l2')
+                         step_size=step_size, num_iter=num_iter, dist_metric='l2')
         _, success_num = pgd_attack.attack(ori_input.detach(), adv_target, mode='targeted')
         self.success_pgd_tar.update(val=success_num, n=batch_size)
 
@@ -928,7 +901,6 @@ class PointCAT(object):
         #                             binary_step=self.args.binary_step, num_iter=self.args.num_iter_cw)
         # _, _, success_num = cw_attack.attack(ori_input.detach(), adv_target, mode='targeted')
         # self.success_cw_tar.update(val=success_num, n=batch_size)
-
 
     def show_results(self, mode):
         """
@@ -1001,10 +973,9 @@ class PointCAT(object):
                 self.success_pgd_tar.sum, self.success_pgd_tar.count, self.success_pgd_tar.avg))
             # self.log_string.write('CW attack ASR ({:d}/{:d}): {:.4f}'.format(
             #     self.success_cw_tar.sum, self.success_cw_tar.count, self.success_cw_tar.avg))
-        
+
         else:
             raise NotImplementedError
-
 
     def save_checkpoints(self, path, epoch_c, epoch_ng, mode):
         """
@@ -1024,3 +995,84 @@ class PointCAT(object):
             else:
                 save_checkpoint(epoch_c, self.classifier, path, modelnet='latest-cls', use_multi_gpu=False)
                 save_checkpoint(epoch_ng, self.noise_generator, path, modelnet='latest-ng', use_multi_gpu=False)
+
+    def generate_generator_adv(self):
+        pert = self.noise_generator(self.pc_ori, self.target)
+        norm = torch.sum(pert ** 2, dim=[1, 2]) ** 0.5
+        pert = pert / (norm[:, None, None] + 1e-9)
+        pert = pert * np.sqrt(self.pc_ori.size(1) * self.pc_ori.size(2))
+        pert = pert * self.args.eps
+        pc_adv = torch.clamp(self.pc_ori + pert, min=-1, max=1)
+        return pc_adv
+
+    def generate_fgm_adv(self):
+        pc = self.pc_ori.detach().clone()
+        pc.requires_grad_()
+        _, logits = self.classifier(pc)
+        loss = self.criterion_ce(logits, self.target)
+        self.classifier.zero_grad()
+        loss.backward()
+        grad = pc.grad.detach()
+        norm = torch.sum(grad ** 2, dim=[1, 2]) ** 0.5
+        grad = grad / (norm[:, None, None] + 1e-9)
+        pert = grad * self.args.eps * np.sqrt(self.pc_ori.size(1) * self.pc_ori.size(2))
+        pc_adv = torch.clamp(pc + pert, min=-1, max=1)
+        return pc_adv.detach()
+
+    def generate_pgd_adv(self, num_iter=3):
+        pc_adv = self.pc_ori.detach().clone()
+        pc_ori = self.pc_ori.detach().clone()
+
+        step_size = (self.args.eps * np.sqrt(self.pc_ori.size(1) * self.pc_ori.size(2))) / max(num_iter, 1)
+
+        for _ in range(num_iter):
+            pc_adv.requires_grad_()
+            _, logits = self.classifier(pc_adv)
+            loss = self.criterion_ce(logits, self.target)
+            self.classifier.zero_grad()
+            loss.backward()
+            grad = pc_adv.grad.detach()
+
+            norm = torch.sum(grad ** 2, dim=[1, 2]) ** 0.5
+            grad = grad / (norm[:, None, None] + 1e-9)
+            pc_adv = pc_adv + step_size * grad
+
+            delta = pc_adv - pc_ori
+            delta_norm = torch.sum(delta ** 2, dim=[1, 2]) ** 0.5
+            factor = torch.clamp(
+                (self.args.eps * np.sqrt(self.pc_ori.size(1) * self.pc_ori.size(2))) / (delta_norm + 1e-9),
+                max=1.0
+            )
+            delta = delta * factor[:, None, None]
+            pc_adv = torch.clamp(pc_ori + delta, min=-1, max=1).detach()
+
+        return pc_adv
+
+    def generate_jitter_adv(self):
+        noise = torch.randn_like(self.pc_ori) * self.args.jitter_sigma
+        noise = torch.clamp(noise, -self.args.jitter_clip, self.args.jitter_clip)
+        pc_adv = torch.clamp(self.pc_ori + noise, min=-1, max=1)
+        return pc_adv.detach()
+
+    def generate_drop_adv(self):
+        pc_adv = self.pc_ori.detach().clone()  # [B, C, N]
+        B, C, N = pc_adv.shape
+        drop_num = min(self.args.drop_num, N // 2)
+        for i in range(B):
+            idx = torch.randperm(N, device=pc_adv.device)[:drop_num]
+            pc_adv[i, :, idx] = 0.0
+        return pc_adv
+
+    def generate_attack(self, attack_name):
+        if attack_name == 'generator':
+            return self.generate_generator_adv()
+        elif attack_name == 'fgm':
+            return self.generate_fgm_adv()
+        elif attack_name == 'pgd':
+            return self.generate_pgd_adv(num_iter=self.args.pgd_train_iter)
+        elif attack_name == 'jitter':
+            return self.generate_jitter_adv()
+        elif attack_name == 'drop':
+            return self.generate_drop_adv()
+        else:
+            raise NotImplementedError
