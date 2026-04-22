@@ -596,65 +596,88 @@ class PointCAT(object):
         # =================================================================================== #
         self.classifier.train()
         self.noise_generator.eval()
-
-        del pert, self.pc_adv, projection_adv, projection_fp, feature_peak
-
-        # Compute adversarial perturbation
-        pert = self.noise_generator(self.pc_ori, self.target)
-        norm = torch.sum(pert ** 2, dim=[1, 2]) ** 0.5
-        pert = pert / (norm[:, None, None] + 1e-9)
-        pert = pert * np.sqrt(self.pc_ori.size(1) * self.pc_ori.size(2))
-        # pert = torch.tanh(pert)
-        pert = pert * self.args.eps
-
-        # Compute adversarial point-cloud
-        self.pc_adv = torch.clamp(self.pc_ori + pert, min=-1, max=1)
-        # self.pc_adv = self.pc_ori + pert
-
-        # Re-get the projection of adv
-        _, projection_ori = self.classifier(self.pc_ori)  # [B, ch]
-        _, projection_adv = self.classifier(self.pc_adv.detach())  # [B, ch]
-
-        # Get intra-class feature centre for each class
-        # feature_peak = self.feature_gather.squeeze(1) # [M, ch]
-        feature_peak = self.feature_gather  # [M, ch]
-
-        # Get the projection of feature peak for the batch data
-        projection_fp = None
+        # --------------------------------------------------
+        # Multi-attack view generation for classifier update
+        # --------------------------------------------------
+        sampled_attacks = self.sample_attacks_for_batch()
+        pc_adv_list = []
+        for atk in sampled_attacks:
+            pc_adv = self.generate_attack(atk)
+            pc_adv_list.append(pc_adv.detach())
+        # Clean projection
+        _, projection_ori = self.classifier(self.pc_ori)
+        # Adversarial projections from multiple attack views
+        adv_proj_list = []
+        for pc_adv in pc_adv_list:
+            _, projection_adv = self.classifier(pc_adv)
+            adv_proj_list.append(projection_adv)
+        # --------------------------------------------------
+        # Compute class-wise feature peak projection
+        # --------------------------------------------------
+        feature_peak = self.feature_gather
         if self.args.use_multi_gpu:
             if self.args.defended_model == 'dgcnn':
-                projection_fp = self.classifier.module.linear3(feature_peak)  # [B, ch]
+                projection_fp = self.classifier.module.linear3(feature_peak)
             elif self.args.defended_model == 'curvenet':
-                projection_fp = self.classifier.module.conv2(feature_peak)  # [B, ch]
+                projection_fp = self.classifier.module.conv2(feature_peak)
             else:
-                projection_fp = self.classifier.module.fc3(feature_peak)  # [B, ch]
+                projection_fp = self.classifier.module.fc3(feature_peak)
         else:
             if self.args.defended_model == 'dgcnn':
-                projection_fp = self.classifier.linear3(feature_peak)  # [B, ch]
+                projection_fp = self.classifier.linear3(feature_peak)
             elif self.args.defended_model == 'curvenet':
-                projection_fp = self.classifier.conv2(feature_peak)  # [B, ch]
+                projection_fp = self.classifier.conv2(feature_peak)
             else:
-                projection_fp = self.classifier.fc3(feature_peak)  # [B, ch]
-        assert projection_fp is not None
-
-        # Compute intra-class feature centralizing loss
-        loss_cent_ori_fp = self.nt_cent_criterion(rep=projection_ori, fp=projection_fp, target=self.target)
-        loss_cent_adv_fp = self.nt_cent_criterion(rep=projection_adv, fp=projection_fp, target=self.target)
-        loss_cent = loss_cent_ori_fp + loss_cent_adv_fp
-
-        # Compute supervised contrastive loss
-        loss_cont = self.sup_con_criterion(zis=projection_ori, zjs=projection_adv, labels=self.target)
-
-        # Compute the classifier loss and update the classifier and projection head
-        loss_cls = loss_cont + self.args.alpha * loss_cent
+                projection_fp = self.classifier.fc3(feature_peak)
+        # --------------------------------------------------
+        # Compute center loss: clean + all adversarial views
+        # --------------------------------------------------
+        loss_cent = self.nt_cent_criterion(
+            rep=projection_ori,
+            fp=projection_fp,
+            target=self.target
+        )
+        for proj_adv in adv_proj_list:
+            loss_cent = loss_cent + self.nt_cent_criterion(
+                rep=proj_adv,
+                fp=projection_fp,
+                target=self.target
+            )
+        # --------------------------------------------------
+        # Compute supervised contrastive loss:
+        # clean vs each adversarial view
+        # --------------------------------------------------
+        loss_cont = 0.0
+        for proj_adv in adv_proj_list:
+            loss_cont = loss_cont + self.sup_con_criterion(
+                zis=projection_ori,
+                zjs=proj_adv,
+                labels=self.target
+            )
+        loss_cont = loss_cont / len(adv_proj_list)
+        # --------------------------------------------------
+        # Compute cross-attack consistency loss:
+        # align different attack views in feature space
+        # --------------------------------------------------
+        if len(adv_proj_list) >= 2:
+            loss_cross = self.cross_attack_criterion(adv_proj_list)
+        else:
+            loss_cross = torch.tensor(0.0, device=projection_ori.device)
+        # Final classifier loss
+        loss_cls = loss_cont + self.args.alpha * loss_cent + self.args.cross_attack_weight * loss_cross
         self.optimizer_c.zero_grad()
         loss_cls.backward()
         self.optimizer_c.step()
-
-        # Print training info
         self.log_string.write(
-            'Loss cls: %.6f (Loss cent 1: %.6f Loss cent 2: %.6f)' % (loss_cls.item(), loss_cent_ori_fp.item(),
-                                                                      loss_cent_adv_fp.item()))
+            'Loss cls: %.6f (cont: %.6f cent: %.6f cross: %.6f | attacks: %s)' %
+            (
+                loss_cls.item(),
+                loss_cont.item(),
+                loss_cent.item(),
+                loss_cross.item(),
+                ','.join(sampled_attacks)
+            )
+        )
 
     def run_finetune(self, ii):
         """
@@ -1076,3 +1099,18 @@ class PointCAT(object):
             return self.generate_drop_adv()
         else:
             raise NotImplementedError
+
+    def get_attack_pool(self):
+        if not self.args.multi_attack:
+            return ['generator']
+        return self.args.attack_types
+
+    def sample_attacks_for_batch(self):
+        attack_pool = self.get_attack_pool()
+
+        if self.args.attack_mix_mode == 'all':
+            return attack_pool
+
+        # random mode
+        sample_num = min(2, len(attack_pool))
+        return random.sample(attack_pool, sample_num)
