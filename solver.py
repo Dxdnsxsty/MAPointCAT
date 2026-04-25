@@ -29,7 +29,7 @@ ROOT_DIR = BASE_DIR
 sys.path.append(os.path.join(ROOT_DIR, 'model/classifier'))
 
 
-class PointCAT(object):
+class MAPointCAT(object):
     def __init__(self, args):
         self.args = args
 

@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import utils.provider as provider
 
 ### model related
-from solver import PointCAT
+from solver import MAPointCAT
 from loss import *
 
 ### others related ###
@@ -47,7 +47,7 @@ class Trainer(object):
         self.log_string = Logging_str(self.logfile_path)
 
         ### Model Function Initialization ###
-        self.model = PointCAT(self.args)
+        self.model = MAPointCAT(self.args)
 
         ### Dataset Preparation ###
         self.load_data()
@@ -328,6 +328,6 @@ if __name__ == "__main__":
     if not os.path.isdir('./data'):
         os.mkdir('./data')
 
-    set_seed(2022)
+    set_seed(2026)
     trainer = Trainer(args)
     trainer.run()
