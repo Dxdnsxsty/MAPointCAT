@@ -763,7 +763,7 @@ with st.sidebar:
 # 7. 加载数据
 # ============================================================
 
-set_seed(2022)
+# set_seed(2026)
 device = get_device(gpu)
 
 if not os.path.isdir(data_path):
@@ -786,25 +786,42 @@ st.success(f"已加载测试集，样本数：{len(dataset)}")
 
 st.header("🔍 单样本攻击与可视化")
 
+# ============================================================
+# 单样本 index 管理
+# ============================================================
+
+if "sample_idx_widget" not in st.session_state:
+    st.session_state.sample_idx_widget = 0
+
+
+def randomize_sample_idx():
+    st.session_state.sample_idx_widget = random.randint(0, len(dataset) - 1)
+
+
 col_sample_1, col_sample_2, col_sample_3 = st.columns([1, 1, 1])
 
 with col_sample_1:
-    sample_idx = st.number_input(
+    st.number_input(
         "样本 index",
         min_value=0,
         max_value=len(dataset) - 1,
-        value=0,
         step=1,
+        key="sample_idx_widget",
     )
 
 with col_sample_2:
-    random_sample = st.button("随机选择样本")
+    st.button(
+        "随机选择样本",
+        on_click=randomize_sample_idx,
+    )
 
 with col_sample_3:
-    run_single_attack = st.button("生成攻击样本并展示", type="primary")
+    run_single_attack = st.button(
+        "生成攻击样本并展示",
+        type="primary",
+    )
 
-if random_sample:
-    sample_idx = random.randint(0, len(dataset) - 1)
+sample_idx = int(st.session_state.sample_idx_widget)
 
 points_np, label_np = dataset[int(sample_idx)]
 label = int(label_np[0])
