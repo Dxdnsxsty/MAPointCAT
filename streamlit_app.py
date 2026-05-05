@@ -897,13 +897,13 @@ if run_single_attack:
     with col_vis_1:
         st.plotly_chart(
             plot_point_cloud(x_bnc, title="Original Point Cloud"),
-            use_container_width=True,
+            width="stretch",
         )
 
     with col_vis_2:
         st.plotly_chart(
             plot_point_cloud(adv_bnc, title=f"Adversarial Point Cloud: {attack_name}"),
-            use_container_width=True,
+            width="stretch",
         )
 
 # ============================================================
@@ -1110,7 +1110,7 @@ if run_eval:
                     "Attack Success / ASR (%)": "{:.2f}",
                 }
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
         csv = df.to_csv(index=False).encode("utf-8-sig")
