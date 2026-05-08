@@ -686,83 +686,218 @@ with st.sidebar:
         index=6,
     )
 
-    targeted = st.checkbox(
-        "Targeted attack",
-        value=False,
-    )
+    # ========================================================
+    # 默认攻击参数
+    # 说明：
+    # 即使某些参数当前攻击不用，也要给默认值。
+    # 因为后面 attack_point_cloud(...) 调用时会统一传入这些变量。
+    # ========================================================
+    targeted = False
+    adv_func_name = "logits"
 
-    adv_func_name = st.selectbox(
-        "Adversarial loss",
-        ["logits", "cross_entropy"],
-        index=0,
-    )
+    delta = 0.020
+    num_iter = 10
+    mu = 1.0
 
-    delta = st.slider(
-        "扰动强度 delta",
-        min_value=0.001,
-        max_value=0.100,
-        value=0.020,
-        step=0.001,
-        format="%.3f",
-    )
+    jitter_sigma = 0.040
+    jitter_clip = 0.160
 
-    num_iter = st.slider(
-        "迭代次数 num_iter",
-        min_value=1,
-        max_value=100,
-        value=10,
-        step=1,
-    )
+    drop_num = 700
 
-    mu = st.slider(
-        "MI-FGM momentum mu",
-        min_value=0.0,
-        max_value=2.0,
-        value=1.0,
-        step=0.1,
-    )
+    cw_lr = 3e-3
+    cw_binary_step = 3
+    cw_num_iter = 30
 
-    jitter_sigma = st.slider(
-        "Jitter sigma",
-        min_value=0.001,
-        max_value=0.100,
-        value=0.040,
-        step=0.001,
-        format="%.3f",
-    )
+    # ========================================================
+    # 根据攻击方法动态显示对应参数
+    # ========================================================
 
-    jitter_clip = st.slider(
-        "Jitter clip",
-        min_value=0.001,
-        max_value=0.500,
-        value=0.160,
-        step=0.001,
-        format="%.3f",
-    )
+    if attack_name == "None":
+        st.info("当前选择 None：不生成攻击样本，直接使用 clean 点云。")
 
-    drop_num = st.slider(
-        "Drop point number",
-        min_value=1,
-        max_value=1000,
-        value=700,
-        step=1,
-    )
+    elif attack_name == "Jitter":
+        st.markdown("#### Jitter 参数")
 
-    cw_binary_step = st.slider(
-        "C&W binary step",
-        min_value=1,
-        max_value=10,
-        value=3,
-        step=1,
-    )
+        jitter_sigma = st.slider(
+            "Jitter sigma",
+            min_value=0.001,
+            max_value=0.100,
+            value=0.040,
+            step=0.001,
+            format="%.3f",
+            help="高斯噪声标准差，越大扰动越强。",
+        )
 
-    cw_num_iter = st.slider(
-        "C&W num iter",
-        min_value=5,
-        max_value=200,
-        value=30,
-        step=5,
-    )
+        jitter_clip = st.slider(
+            "Jitter clip",
+            min_value=0.001,
+            max_value=0.500,
+            value=0.160,
+            step=0.001,
+            format="%.3f",
+            help="噪声裁剪范围，限制单点最大扰动。",
+        )
+
+    elif attack_name == "Drop":
+        st.markdown("#### Drop 参数")
+
+        drop_num = st.slider(
+            "Drop point number",
+            min_value=1,
+            max_value=1000,
+            value=700,
+            step=1,
+            help="删除的点数量，越大攻击越强，但点云缺失越明显。",
+        )
+
+    elif attack_name == "FGM":
+        st.markdown("#### FGM 参数")
+
+        targeted = st.checkbox(
+            "Targeted attack",
+            value=False,
+            help="是否使用目标攻击。未勾选时为 untargeted attack。",
+        )
+
+        adv_func_name = st.selectbox(
+            "Adversarial loss",
+            ["logits", "cross_entropy"],
+            index=0,
+            help="攻击损失函数。logits 通常更适合 margin-based 攻击。",
+        )
+
+        delta = st.slider(
+            "扰动强度 delta",
+            min_value=0.001,
+            max_value=0.100,
+            value=0.020,
+            step=0.001,
+            format="%.3f",
+            help="FGM 的扰动预算系数，越大攻击越强。",
+        )
+
+    elif attack_name in ["IFGM", "PGD"]:
+        st.markdown(f"#### {attack_name} 参数")
+
+        targeted = st.checkbox(
+            "Targeted attack",
+            value=False,
+            help="是否使用目标攻击。未勾选时为 untargeted attack。",
+        )
+
+        adv_func_name = st.selectbox(
+            "Adversarial loss",
+            ["logits", "cross_entropy"],
+            index=0,
+            help="攻击损失函数。logits 通常更适合 margin-based 攻击。",
+        )
+
+        delta = st.slider(
+            "扰动强度 delta",
+            min_value=0.001,
+            max_value=0.100,
+            value=0.020,
+            step=0.001,
+            format="%.3f",
+            help="扰动预算系数，越大攻击越强。",
+        )
+
+        num_iter = st.slider(
+            "迭代次数 num_iter",
+            min_value=1,
+            max_value=100,
+            value=10,
+            step=1,
+            help="迭代攻击步数，越大攻击越强，但速度越慢。",
+        )
+
+    elif attack_name == "MIFGM":
+        st.markdown("#### MIFGM 参数")
+
+        targeted = st.checkbox(
+            "Targeted attack",
+            value=False,
+            help="是否使用目标攻击。未勾选时为 untargeted attack。",
+        )
+
+        adv_func_name = st.selectbox(
+            "Adversarial loss",
+            ["logits", "cross_entropy"],
+            index=0,
+            help="攻击损失函数。logits 通常更适合 margin-based 攻击。",
+        )
+
+        delta = st.slider(
+            "扰动强度 delta",
+            min_value=0.001,
+            max_value=0.100,
+            value=0.020,
+            step=0.001,
+            format="%.3f",
+            help="扰动预算系数，越大攻击越强。",
+        )
+
+        num_iter = st.slider(
+            "迭代次数 num_iter",
+            min_value=1,
+            max_value=100,
+            value=10,
+            step=1,
+            help="迭代攻击步数，越大攻击越强，但速度越慢。",
+        )
+
+        mu = st.slider(
+            "MI-FGM momentum mu",
+            min_value=0.0,
+            max_value=2.0,
+            value=1.0,
+            step=0.1,
+            help="动量系数，控制历史梯度的影响。",
+        )
+
+    elif attack_name == "C&W":
+        st.markdown("#### C&W 参数")
+
+        targeted = st.checkbox(
+            "Targeted attack",
+            value=False,
+            help="是否使用目标攻击。未勾选时为 untargeted attack。",
+        )
+
+        adv_func_name = st.selectbox(
+            "Adversarial loss",
+            ["logits", "cross_entropy"],
+            index=0,
+            help="攻击损失函数。",
+        )
+
+        cw_lr = st.slider(
+            "C&W learning rate",
+            min_value=0.0001,
+            max_value=0.0200,
+            value=0.0030,
+            step=0.0001,
+            format="%.4f",
+            help="C&W 优化学习率。",
+        )
+
+        cw_binary_step = st.slider(
+            "C&W binary step",
+            min_value=1,
+            max_value=10,
+            value=3,
+            step=1,
+            help="C&W 二分搜索步数。",
+        )
+
+        cw_num_iter = st.slider(
+            "C&W num iter",
+            min_value=5,
+            max_value=200,
+            value=30,
+            step=5,
+            help="C&W 每次优化的迭代次数。",
+        )
 
     st.divider()
     st.header("🎬 论文展示配置")
@@ -794,6 +929,11 @@ with st.sidebar:
     if st.button("重置自动搜索位置"):
         st.session_state.demo_search_start_idx = 0
         st.success("自动搜索位置已重置为 index = 0")
+
+    if st.button("清除当前展示结果"):
+        if "demo_result" in st.session_state:
+            del st.session_state["demo_result"]
+        st.success("已清除当前展示结果。")
 
 # ============================================================
 # 7. 加载数据集
@@ -992,7 +1132,7 @@ def run_pair_demo_for_index(sample_index):
         jitter_sigma=jitter_sigma,
         jitter_clip=jitter_clip,
         drop_num=drop_num,
-        cw_lr=3e-3,
+        cw_lr=cw_lr,
         cw_binary_step=cw_binary_step,
         cw_num_iter=cw_num_iter,
     )
@@ -1377,7 +1517,7 @@ if run_single_attack:
                     jitter_sigma=jitter_sigma,
                     jitter_clip=jitter_clip,
                     drop_num=drop_num,
-                    cw_lr=3e-3,
+                    cw_lr=cw_lr,
                     cw_binary_step=cw_binary_step,
                     cw_num_iter=cw_num_iter,
                 )
@@ -1533,7 +1673,7 @@ def evaluate_model_under_attack(
                 jitter_sigma=jitter_sigma,
                 jitter_clip=jitter_clip,
                 drop_num=drop_num,
-                cw_lr=3e-3,
+                cw_lr=cw_lr,
                 cw_binary_step=cw_binary_step,
                 cw_num_iter=cw_num_iter,
             )
