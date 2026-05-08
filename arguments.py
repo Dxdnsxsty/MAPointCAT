@@ -80,7 +80,7 @@ class Arguments:
                                   choices=['random', 'all'],
                                   help='random: sample one/two attacks each batch; all: use all attacks')
         self._parser.add_argument('--attack_types', type=str, nargs='+',
-                                  default=['generator', 'fgm', 'pgd', 'jitter'],
+                                  default=['generator', 'fgm', 'jitter'],
                                   help='attack types used in training')
         self._parser.add_argument('--cross_attack_weight', type=float, default=0.5,
                                   help='weight for cross-attack consistency loss')
