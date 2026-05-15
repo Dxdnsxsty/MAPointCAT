@@ -651,7 +651,7 @@ with st.sidebar:
 
     ckpt_ma = st.text_input(
         "MA checkpoint",
-        value="./log/pn_ma_no_cross/checkpoints/best-cls.pth",
+        value="./log/pn_ma_no_cc/checkpoints/best-cls.pth",
     )
 
     ckpt_macc = st.text_input(
