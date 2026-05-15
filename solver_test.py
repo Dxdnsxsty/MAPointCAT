@@ -31,7 +31,7 @@ class PointTester(object):
         self.log_string = Logging_str(self.logfile_path)
 
         ### Initialize Settings ###
-        set_seed(2022)
+        set_seed(2026)
 
         if self.args.dataset == 'ModelNet40':
             self.num_class = 40
