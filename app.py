@@ -651,12 +651,12 @@ with st.sidebar:
 
     ckpt_ma = st.text_input(
         "MA checkpoint",
-        value="./log/exp_multi_no_cross/checkpoints/best-cls.pth",
+        value="./log/pn_ma_no_cross/checkpoints/best-cls.pth",
     )
 
     ckpt_macc = st.text_input(
         "MA+CC checkpoint",
-        value="./log/exp_multi_cross/checkpoints/best-cls.pth",
+        value="./log/pn_ma_cc_all_gen_fgm_jitter_lam05/checkpoints/best-cls.pth",
     )
 
     selected_defense_model_name = st.selectbox(
