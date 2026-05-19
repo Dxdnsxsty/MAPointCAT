@@ -77,29 +77,57 @@ class MAPointCAT(object):
         self.noise_generator = noise_generator.cuda()
 
     def load_weights(self):
-        """
-        Load weights from checkpoints.
-        """
-        try:
-            checkpoint = torch.load(str(self.log_path) + '/checkpoints/classifier_noAT.pth')
-            # checkpoint = torch.load('../Pointnet_Pointnet2_pytorch/log/classification_old/' \
-            #     + self.args.defended_model + '/checkpoints/best_model.pth')
-            self.start_epoch_c = checkpoint['epoch']
-            self.classifier.load_state_dict(checkpoint['model_state_dict'])
-            self.log_string.write('Use pretrained classifier')
-        except:
-            self.start_epoch_c = 0
-            # self.need_preview = True
-            self.log_string.write('No existing classifier, starting training from scratch...')
+        import os
+        import torch
+        from collections import OrderedDict
+
+        ckpt_dir = os.path.join(str(self.log_path), 'checkpoints')
+        cls_path = os.path.join(ckpt_dir, 'classifier_noAT.pth')
+        ng_path = os.path.join(ckpt_dir, 'best_noise_generator.pth')
+
+        def load_one(model, path, model_name):
+            print(f'Trying to load {model_name} from: {path}')
+            checkpoint = torch.load(path, map_location='cpu')
+
+            # 兼容两种格式：
+            # 1) {'epoch': ..., 'model_state_dict': ...}
+            # 2) 直接就是 state_dict
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+                epoch = checkpoint.get('epoch', 0)
+            else:
+                state_dict = checkpoint
+                epoch = 0
+
+            # 先直接加载
+            try:
+                model.load_state_dict(state_dict)
+            except Exception:
+                # 处理 DataParallel 的 module. 前缀问题
+                new_state_dict = OrderedDict()
+                for k, v in state_dict.items():
+                    if k.startswith('module.'):
+                        new_state_dict[k[7:]] = v
+                    else:
+                        new_state_dict['module.' + k] = v
+                model.load_state_dict(new_state_dict, strict=False)
+
+            print(f'Successfully loaded {model_name} from: {path}')
+            return epoch
 
         try:
-            checkpoint = torch.load(str(self.log_path) + '/checkpoints/best_noise_generator.pth')
-            self.start_epoch_ng = checkpoint['epoch']
-            self.noise_generator.load_state_dict(checkpoint['model_state_dict'])
-            self.log_string.write('Use pretrained noise-generator')
-        except:
+            self.start_epoch_c = load_one(self.classifier, cls_path, 'classifier')
+        except Exception as e:
+            self.start_epoch_c = 0
+            print('Failed to load classifier:', repr(e))
+            self.log_string.write('No existing classifier, starting training from scratch...\n')
+
+        try:
+            self.start_epoch_ng = load_one(self.noise_generator, ng_path, 'noise-generator')
+        except Exception as e:
             self.start_epoch_ng = 0
-            self.log_string.write('No existing noise-generator, starting training from scratch...')
+            print('Failed to load noise-generator:', repr(e))
+            self.log_string.write('No existing noise-generator, starting training from scratch...\n')
 
     def build_optimizers(self):
         """
